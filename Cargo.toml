@@ -1,0 +1,16 @@
+[package]
+name = "lattice-boltzmann-play"
+version = "0.1.0"
+authors = ["Loke Gustafsson <lokegustafsson@pm.me>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+minifb = "0.19"
+cgmath = "0.17"
+rand = "0.7"
+rayon = "1.5"
+
+[profile.release]
+debug = 1
