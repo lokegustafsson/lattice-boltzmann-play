@@ -41,7 +41,7 @@ where
             if r_point < ROWS && c_point < COLS {
                 let r_delta = r_point as f32 - r;
                 let c_delta = c_point as f32 - c;
-                let weight: f32 = (1.0 - r_delta.hypot(c_delta)).max(0.0);
+                let weight: f32 = (1.0 - r_delta * r_delta - c_delta * c_delta).max(0.0);
 
                 res += field[r_point][c_point] * weight;
                 tot_weight += weight;
@@ -118,7 +118,7 @@ impl Trace {
     }
     pub fn advance(&mut self, velocity: &[[Vector2<f32>; COLS]; ROWS]) {
         let vel = interpolate(velocity, (self.0, self.1));
-        const SPEED: f32 = 3.0;
+        const SPEED: f32 = 10.0;
         self.0 += SPEED * vel.x / ROWS as f32;
         self.1 += SPEED * vel.y / COLS as f32;
     }

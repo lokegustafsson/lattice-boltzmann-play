@@ -6,8 +6,9 @@ use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use rayon::prelude::*;
 use visual::{float_to_sim, interpolate, speed, two_color, velocity, vorticity, Trace};
 
-const WIDTH: usize = 10 * COLS;
-const HEIGHT: usize = 10 * ROWS;
+const WIDTH: usize = 8 * COLS;
+const HEIGHT: usize = 8 * ROWS;
+const SUBSTEPS: usize = 10;
 
 fn main() {
     let mut buffer: Vec<u32> = vec![0; WIDTH * HEIGHT];
@@ -27,15 +28,12 @@ fn main() {
 
     let mut traces: Vec<Trace> = (0..1000).map(|_| Trace::initial()).collect();
     let mut lattice = Lattice::new();
-    lattice
-        .iter_mut()
-        .for_each(|cell| cell[4] = 1.0 + 0.1 * rand::random::<f32>());
     println!("Initial mass: {}", lattice.total_mass());
 
-    let mut last = String::new();
     let mut unblocking = true;
     let mut clicking = false;
     let mut show_vorticity = false;
+    let mut adjust = 1;
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         if !clicking && window.get_mouse_down(minifb::MouseButton::Left) {
@@ -56,14 +54,23 @@ fn main() {
         if window.is_key_pressed(Key::Space, KeyRepeat::No) {
             show_vorticity ^= true;
         }
+        if window.is_key_pressed(Key::Down, KeyRepeat::No) {
+            adjust -= 1;
+        }
+        if window.is_key_pressed(Key::Up, KeyRepeat::No) {
+            adjust += 1;
+        }
 
-        lattice.collide();
-        lattice.stream();
-        let mass = lattice.total_mass();
-        let msg = format!("{:.2e}", mass);
-        if msg != last {
-            last = msg;
-            println!("Mass: {}", last);
+        for _ in 0..SUBSTEPS {
+            lattice.collide();
+            lattice.stream();
+        }
+        if lattice.time_elapsed() % 100 == 0 {
+            println!(
+                "Mass: {}, Elapsed: {}",
+                lattice.total_mass(),
+                lattice.time_elapsed()
+            );
         }
 
         let vorticity = vorticity(&lattice);
@@ -81,9 +88,7 @@ fn main() {
 
                 let field = if show_vorticity { &vorticity } else { &speed };
                 let value = interpolate(field, float_pos);
-                const CUTOFF: f32 = 0.00001;
-                let res = value.signum()
-                    * (((value.abs() + CUTOFF).ln() - CUTOFF.ln()) / (-CUTOFF.ln())).min(1.0);
+                let res = value.signum() * value.abs().powf(1.0 / adjust as f32);
                 return (win_pos, two_color(res));
             })
             .collect::<Vec<_>>()

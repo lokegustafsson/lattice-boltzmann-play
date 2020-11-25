@@ -2,8 +2,8 @@ use cgmath::{prelude::*, Vector2};
 use std::convert::TryInto;
 use std::iter::Iterator;
 
-pub const COLS: usize = 100;
-pub const ROWS: usize = 60;
+pub const COLS: usize = 200;
+pub const ROWS: usize = 120;
 const CELLS: usize = COLS * ROWS;
 
 #[rustfmt::skip]
@@ -20,36 +20,35 @@ const WEIGHT: [f32; 9] = {
     let b = 1.0 / 36.0;
     [b, a, b, a, 4.0 / 9.0, a, b, a, b]
 };
+const DEFAULT_VELOCITY: Vector2<f32> = Vector2::new(0.0, 0.05);
 
 pub struct Lattice {
     lattice: Box<[[[f32; 9]; COLS]; ROWS]>,
     blocked: Box<[[bool; COLS]; ROWS]>,
+    // Measured in abstract time units. A cell has width 1 space unit and the
+    // speed of sound is roughly 1 space unit per time unit.
+    time_elapsed: usize,
 }
 
 impl Lattice {
     pub fn toggle_block(&mut self, (r, c): (usize, usize)) {
+        if self.blocked[r][c] {
+            set_vel(&mut self.lattice[r][c], Vector2::zero());
+            self.lattice[r][c][4] = 0.8;
+        }
         self.blocked[r][c] ^= true;
     }
     pub fn blocked(&self, (r, c): (usize, usize)) -> bool {
         self.blocked[r][c]
     }
     pub fn total_mass(&self) -> f32 {
-        let mut ans = 0.0;
-        for (r, c) in cells().filter(|&c| !self.blocked(c)) {
+        let mut mass = 0.0;
+        for (r, c) in cells() {
             for v in 0..9 {
-                ans += self.lattice[r][c][v];
+                mass += self.lattice[r][c][v];
             }
         }
-        ans
-    }
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut [f32; 9]> {
-        self.lattice
-            .iter_mut()
-            .zip(self.blocked.iter())
-            .map(|(lattice_row, blocked_row)| lattice_row.iter_mut().zip(blocked_row.iter()))
-            .flatten()
-            .filter(|(_, blocked)| !*blocked)
-            .map(|(cell, _)| cell)
+        mass
     }
     pub fn mass_at(&self, (r, c): (usize, usize)) -> f32 {
         self.lattice[r][c].iter().sum()
@@ -63,14 +62,27 @@ impl Lattice {
             .enumerate()
             .fold(Vector2::zero(), |acc, (i, &val)| acc + C_VELS[i] * val)
     }
-
+    pub fn time_elapsed(&self) -> usize {
+        self.time_elapsed
+    }
     pub fn new() -> Lattice {
+        let mut lattice = Lattice::new_lattice();
+        let equiv = {
+            let mut equiv = [0.0; 9];
+            equiv
+                .iter_mut()
+                .zip(equilibrium(DEFAULT_VELOCITY))
+                .for_each(|(arr, eq)| *arr = eq);
+            equiv
+        };
+        cells_iter_mut(&mut lattice).for_each(|cell| *cell = equiv);
         let blocked = vec![false; CELLS];
         let blocked: Box<[bool; CELLS]> = blocked.into_boxed_slice().try_into().unwrap();
         unsafe {
             Lattice {
-                lattice: Lattice::new_lattice(),
+                lattice,
                 blocked: std::mem::transmute(blocked),
+                time_elapsed: 0,
             }
         }
     }
@@ -80,68 +92,79 @@ impl Lattice {
         unsafe { std::mem::transmute(lattice) }
     }
     pub fn collide(&mut self) {
-        self.iter_mut().for_each(|cell| collide_cell(cell));
+        cells_iter_mut(&mut self.lattice).for_each(|cell| collide_cell(cell));
     }
     pub fn stream(&mut self) {
         let mut new_lattice = Lattice::new_lattice();
-        for origin in cells().filter(|&cell| !self.blocked(cell)) {
-            for jump in directions() {
-                if let Some((nr, nc, dr, dc)) = self.go(origin, *jump) {
-                    assert!(nr < ROWS);
-                    assert!(nc < COLS);
-                    assert!(!self.blocked((nr, nc)));
-                    let vel = (3 * dr + dc + 4) as usize;
-                    let amount =
-                        self.lattice[origin.0][origin.1][(3 * jump.0 + jump.1 + 4) as usize];
-                    new_lattice[nr][nc][vel] += amount;
-                }
+        for (r0, c0) in cells().filter(|&cell| !self.blocked(cell)) {
+            for &(dr0, dc0) in directions() {
+                let (r, c, dr, dc) = self.go((r0, c0), (dr0, dc0));
+                assert!(r < ROWS);
+                assert!(c < COLS);
+                assert!(!self.blocked((r, c)));
+                let old_vel = (3 * dr0 + dc0 + 4) as usize;
+                let new_vel = (3 * dr + dc + 4) as usize;
+                new_lattice[r][c][new_vel] += self.lattice[r0][c0][old_vel];
             }
         }
         for r in 0..ROWS {
-            for v in 0..9 {
-                new_lattice[r][0][v] = 0.0;
-                new_lattice[r][COLS - 1][v] = 0.0;
-            }
-            new_lattice[r][0][4] = 10.0;
-            new_lattice[r][COLS - 1][4] = 1.0;
+            set_vel(&mut new_lattice[r][0], DEFAULT_VELOCITY);
+            set_vel(&mut new_lattice[r][COLS - 1], DEFAULT_VELOCITY);
         }
         self.lattice = new_lattice;
+        self.time_elapsed += 1;
     }
-    fn go(
-        &self,
-        (r, c): (usize, usize),
-        (mut dr, dc): (isize, isize),
-    ) -> Option<(usize, usize, isize, isize)> {
-        let nc = c + dc as usize;
-        if nc >= COLS {
-            None
-        } else {
-            let nr = {
-                let nr = r as isize + dr;
-                if nr == -1 {
-                    dr = 1;
-                    0
-                } else if nr == ROWS as isize {
-                    dr = -1;
-                    ROWS - 1
-                } else {
-                    nr as usize
-                }
-            };
-            let blocked_both = self.blocked((nr, nc));
-            let blocked_r = self.blocked((nr, c));
-            let blocked_c = self.blocked((r, nc));
-            if (blocked_r && blocked_c) || (!blocked_r && !blocked_c && blocked_both) {
-                Some((r, c, -dr, -dc))
-            } else if !blocked_both {
-                Some((nr, nc, dr, dc))
-            } else if blocked_c {
-                Some((nr, c, dr, -dc))
+    fn go(&self, (r, c): (usize, usize), (dr, dc): (isize, isize)) -> (usize, usize, isize, isize) {
+        // Bounce at upper and lower wall
+        let (nr, dr) = {
+            let nr = r as isize + dr;
+            if nr == -1 {
+                (0, 1)
+            } else if nr == ROWS as isize {
+                (ROWS - 1, -1)
             } else {
-                Some((r, nc, -dr, dc))
+                (nr as usize, dr)
             }
+        };
+        // Periodic at left and right wall
+        let nc = {
+            let nc = c as isize + dc;
+            if nc == -1 {
+                COLS - 1
+            } else if nc == COLS as isize {
+                0
+            } else {
+                nc as usize
+            }
+        };
+        // Bounce against blocked cells
+        let blocked_both = self.blocked((nr, nc));
+        let blocked_r = self.blocked((nr, c));
+        let blocked_c = self.blocked((r, nc));
+        if (blocked_r && blocked_c) || (blocked_both && !blocked_r && !blocked_c) {
+            (r, c, -dr, -dc)
+        } else if !blocked_both {
+            (nr, nc, dr, dc)
+        } else if blocked_c {
+            (nr, c, dr, -dc)
+        } else {
+            (r, nc, -dr, dc)
         }
     }
+}
+
+fn set_vel(cell: &mut [f32; 9], vel: Vector2<f32>) {
+    let mass: f32 = cell.iter().sum();
+    cell.iter_mut()
+        .zip(equilibrium(vel))
+        .for_each(|(cell, eq)| *cell = mass * eq);
+}
+
+fn cells_iter_mut(lattice: &mut [[[f32; 9]; COLS]; ROWS]) -> impl Iterator<Item = &mut [f32; 9]> {
+    lattice
+        .iter_mut()
+        .map(|lattice_row| lattice_row.iter_mut())
+        .flatten()
 }
 
 #[rustfmt::skip]
@@ -153,6 +176,28 @@ fn directions() -> &'static [(isize, isize)] {
 
 pub fn cells() -> impl Iterator<Item = (usize, usize)> {
     (0..ROWS).map(|r| (0..COLS).map(move |c| (r, c))).flatten()
+}
+
+fn equilibrium(velocity: Vector2<f32>) -> impl Iterator<Item = f32> {
+    let dx_by_dt = 1.0;
+    let vel = velocity / dx_by_dt;
+
+    (0..9)
+        .map(move |v| {
+            let along = C_VELS[v].dot(vel);
+
+            WEIGHT[v] * (1.0 + 3.0 * along + 4.5 * along * along - 1.5 * vel.magnitude2())
+        })
+        .filter(move |f_eq| {
+            if f_eq.is_sign_negative() {
+                panic!(
+                    "Rescaled speed {}, velocity {:?} is too high for D2Q9",
+                    vel.magnitude(),
+                    vel
+                );
+            }
+            true
+        })
 }
 
 fn collide_cell(cell: &mut [f32; 9]) {
@@ -169,22 +214,10 @@ fn collide_cell(cell: &mut [f32; 9]) {
     let vel = momentum / mass;
     assert!(vel.is_finite());
 
-    let time_scale = 5.0;
-    let sound2: f32 = (0..9).map(|i| WEIGHT[i] * C_VELS[i].magnitude2()).sum();
+    let reynold = 100.0;
+    let time_scale = 0.5 + 1.0 / reynold;
 
-    for v in 0..9 {
-        let uc = C_VELS[v].dot(vel);
-        assert!(uc.is_finite());
-
-        let uc_by_cs2 = uc / sound2;
-        let equilibrium = WEIGHT[v]
-            * mass
-            * (1.0 + uc_by_cs2 + uc_by_cs2.powi(2) / 2.0 - vel.magnitude2() / sound2 / 2.0);
-        assert!(equilibrium.is_finite());
-        if equilibrium.is_sign_negative() {
-            panic!("This breaks down when approaching/exceeding Mach 1... vel: {:?}, sound: {}", vel, sound2.sqrt());
-        }
-
-        cell[v] += (equilibrium - cell[v]) / time_scale;
-    }
+    cell.iter_mut()
+        .zip(equilibrium(vel).map(|eq| mass * eq))
+        .for_each(|(f, f_eq)| *f += (f_eq - *f) / time_scale);
 }
