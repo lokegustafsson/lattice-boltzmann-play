@@ -118,7 +118,7 @@ impl Trace {
     }
     pub fn advance(&mut self, velocity: &[[Vector2<f32>; COLS]; ROWS]) {
         let vel = interpolate(velocity, (self.0, self.1));
-        const SPEED: f32 = 10.0;
+        const SPEED: f32 = 2.0;
         self.0 += SPEED * vel.x / ROWS as f32;
         self.1 += SPEED * vel.y / COLS as f32;
     }

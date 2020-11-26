@@ -2,10 +2,34 @@ use cgmath::{prelude::*, Vector2};
 use std::convert::TryInto;
 use std::iter::Iterator;
 
+// LBM restricts us to relatively low reynolds numbers. Also, since this implementation is very
+// slow, we need to keep a significant fraction of the speed of sound to see any action. Hence,
+// this simulation simulates a few grams of honey flowing through a tube the size of a water
+// bottle at 100 m/s, in extreme slow motion
+
+// Physical (honey, roughly)
+const SOUND_SPEED_SI: f32 = 1400.0; // m/s
+const KIN_VISCOSITY_SI: f32 = 0.005; // m^2/s
+const DENSITY_SI: f32 = 1000.0; // kg/m^3
+
+// Constants
 pub const COLS: usize = 200;
 pub const ROWS: usize = 120;
-const CELLS: usize = COLS * ROWS;
+const CELL_SIZE_SI: f32 = 0.001; // 1 mm
+const DEFAULT_VELOCITY_SI: Vector2<f32> = Vector2::new(0.0, 100.0); // 100 m/s
 
+// Derived
+const SQRT3: f32 = 1.732; // sqrt() is not a const fn
+const TIME_STEP_SI: f32 = CELL_SIZE_SI / (SQRT3 * SOUND_SPEED_SI);
+const RELAXATION_FACTOR: f32 =
+    1.0 / (0.5 + (SQRT3 * KIN_VISCOSITY_SI) / (SOUND_SPEED_SI * CELL_SIZE_SI));
+const CELLS: usize = COLS * ROWS;
+const DEFAULT_VELOCITY: Vector2<f32> = Vector2::new(
+    DEFAULT_VELOCITY_SI.x / (SQRT3 * SOUND_SPEED_SI),
+    DEFAULT_VELOCITY_SI.y / (SQRT3 * SOUND_SPEED_SI),
+);
+
+// Lattice
 #[rustfmt::skip]
 const C_VELS: [Vector2<f32>; 9] = {
     const fn v(dr: isize, dc: isize) -> Vector2<f32> {
@@ -20,7 +44,6 @@ const WEIGHT: [f32; 9] = {
     let b = 1.0 / 36.0;
     [b, a, b, a, 4.0 / 9.0, a, b, a, b]
 };
-const DEFAULT_VELOCITY: Vector2<f32> = Vector2::new(0.0, 0.05);
 
 pub struct Lattice {
     lattice: Box<[[[f32; 9]; COLS]; ROWS]>,
@@ -33,8 +56,8 @@ pub struct Lattice {
 impl Lattice {
     pub fn toggle_block(&mut self, (r, c): (usize, usize)) {
         if self.blocked[r][c] {
+            self.lattice[r][c][4] = 1.0;
             set_vel(&mut self.lattice[r][c], Vector2::zero());
-            self.lattice[r][c][4] = 0.8;
         }
         self.blocked[r][c] ^= true;
     }
@@ -48,7 +71,7 @@ impl Lattice {
                 mass += self.lattice[r][c][v];
             }
         }
-        mass
+        mass * (DENSITY_SI * CELL_SIZE_SI.powi(3))
     }
     pub fn mass_at(&self, (r, c): (usize, usize)) -> f32 {
         self.lattice[r][c].iter().sum()
@@ -62,8 +85,8 @@ impl Lattice {
             .enumerate()
             .fold(Vector2::zero(), |acc, (i, &val)| acc + C_VELS[i] * val)
     }
-    pub fn time_elapsed(&self) -> usize {
-        self.time_elapsed
+    pub fn time_elapsed(&self) -> f32 {
+        self.time_elapsed as f32 * TIME_STEP_SI
     }
     pub fn new() -> Lattice {
         let mut lattice = Lattice::new_lattice();
@@ -178,10 +201,7 @@ pub fn cells() -> impl Iterator<Item = (usize, usize)> {
     (0..ROWS).map(|r| (0..COLS).map(move |c| (r, c))).flatten()
 }
 
-fn equilibrium(velocity: Vector2<f32>) -> impl Iterator<Item = f32> {
-    let dx_by_dt = 1.0;
-    let vel = velocity / dx_by_dt;
-
+fn equilibrium(vel: Vector2<f32>) -> impl Iterator<Item = f32> {
     (0..9)
         .map(move |v| {
             let along = C_VELS[v].dot(vel);
@@ -214,10 +234,7 @@ fn collide_cell(cell: &mut [f32; 9]) {
     let vel = momentum / mass;
     assert!(vel.is_finite());
 
-    let reynold = 100.0;
-    let time_scale = 0.5 + 1.0 / reynold;
-
     cell.iter_mut()
         .zip(equilibrium(vel).map(|eq| mass * eq))
-        .for_each(|(f, f_eq)| *f += (f_eq - *f) / time_scale);
+        .for_each(|(f, f_eq)| *f += RELAXATION_FACTOR * (f_eq - *f));
 }

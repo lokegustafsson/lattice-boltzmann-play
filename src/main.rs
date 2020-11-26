@@ -28,11 +28,12 @@ fn main() {
 
     let mut traces: Vec<Trace> = (0..1000).map(|_| Trace::initial()).collect();
     let mut lattice = Lattice::new();
-    println!("Initial mass: {}", lattice.total_mass());
+    println!("Initial mass: {:.2} gram", lattice.total_mass() * 1e3);
 
     let mut unblocking = true;
     let mut clicking = false;
     let mut show_vorticity = false;
+    let mut tick = 0;
     let mut adjust = 1;
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
@@ -65,11 +66,12 @@ fn main() {
             lattice.collide();
             lattice.stream();
         }
-        if lattice.time_elapsed() % 100 == 0 {
+        tick += 1;
+        if tick % 100 == 0 {
             println!(
-                "Mass: {}, Elapsed: {}",
-                lattice.total_mass(),
-                lattice.time_elapsed()
+                "Mass: {:.2} gram, Elapsed: {:.2} milliseconds",
+                lattice.total_mass() * 1e3,
+                lattice.time_elapsed() * 1e3
             );
         }
 
