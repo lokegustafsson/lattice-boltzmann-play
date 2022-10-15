@@ -45,6 +45,7 @@
           in [
             p.rust-bin.stable.latest.clippy
             p.rust-bin.stable.latest.default
+            p.cargo-flamegraph
           ] ++ builtins.attrValues rust.packages;
         };
 
