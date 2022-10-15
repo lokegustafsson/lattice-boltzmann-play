@@ -4,6 +4,7 @@ mod visual;
 use lattice::{Lattice, COLS, ROWS};
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use rayon::prelude::*;
+use std::time::Instant;
 use visual::{float_to_sim, interpolate, speed, two_color, velocity, vorticity, Trace};
 
 const WIDTH: usize = 8 * COLS;
@@ -34,6 +35,7 @@ fn main() {
     let mut clicking = false;
     let mut show_vorticity = false;
     let mut tick = 0;
+    let mut last_tick = Instant::now();
     let mut adjust = 1;
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
@@ -67,13 +69,16 @@ fn main() {
             lattice.stream();
         }
         tick += 1;
-        if tick % 100 == 0 {
+        if true || tick % 100 == 0 {
             println!(
-                "Mass: {:.2} gram, Elapsed: {:.2} milliseconds",
+                "Mass: {:.2} gram, Elapsed: {:.2} milliseconds, MLUPS: {:.2}",
                 lattice.total_mass() * 1e3,
-                lattice.time_elapsed() * 1e3
+                lattice.time_elapsed() * 1e3,
+                (ROWS * COLS * SUBSTEPS) as f32
+                    / (1e6 * Instant::now().duration_since(last_tick).as_secs_f32()),
             );
         }
+        last_tick = Instant::now();
 
         let vorticity = vorticity(&lattice);
         let velocity = velocity(&lattice);
