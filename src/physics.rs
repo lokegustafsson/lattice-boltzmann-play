@@ -13,8 +13,8 @@ const KIN_VISCOSITY_SI: f32 = 0.005; // m^2/s
 const DENSITY_SI: f32 = 1000.0; // kg/m^3
 
 // Constants
-pub const COLS: usize = 200;
-pub const ROWS: usize = 120;
+pub const PHYS_COLS: usize = 200;
+pub const PHYS_ROWS: usize = 120;
 const CELL_SIZE_SI: f32 = 0.001; // 1 mm
 const DEFAULT_VELOCITY_SI: Vector2<f32> = Vector2::new(0.0, 100.0); // 100 m/s
 
@@ -23,7 +23,7 @@ const SQRT3: f32 = 1.732; // sqrt() is not a const fn
 const TIME_STEP_SI: f32 = CELL_SIZE_SI / (SQRT3 * SOUND_SPEED_SI);
 const RELAXATION_FACTOR: f32 =
     1.0 / (0.5 + (SQRT3 * KIN_VISCOSITY_SI) / (SOUND_SPEED_SI * CELL_SIZE_SI));
-const CELLS: usize = COLS * ROWS;
+const CELLS: usize = PHYS_COLS * PHYS_ROWS;
 const DEFAULT_VELOCITY: Vector2<f32> = Vector2::new(
     DEFAULT_VELOCITY_SI.x / (SQRT3 * SOUND_SPEED_SI),
     DEFAULT_VELOCITY_SI.y / (SQRT3 * SOUND_SPEED_SI),
@@ -45,24 +45,27 @@ const WEIGHT: [f32; 9] = {
     [b, a, b, a, 4.0 / 9.0, a, b, a, b]
 };
 
-pub struct Lattice {
-    lattice: Box<[[[f32; 9]; COLS]; ROWS]>,
-    blocked: Box<[[bool; COLS]; ROWS]>,
+pub struct Physics {
+    lattice: Box<[[[f32; 9]; PHYS_COLS]; PHYS_ROWS]>,
+    blocked: Box<[[bool; PHYS_COLS]; PHYS_ROWS]>,
     // Measured in abstract time units. A cell has width 1 space unit and the
     // speed of sound is roughly 1 space unit per time unit.
     time_elapsed: usize,
 }
 
-impl Lattice {
-    pub fn toggle_block(&mut self, (r, c): (usize, usize)) {
+impl Physics {
+    pub fn is_blocked_at(&self, (r, c): (usize, usize)) -> bool {
+        self.blocked[r][c]
+    }
+    pub fn update_cell_blocked_status(&mut self, (r, c): (usize, usize), make_blocked: bool) {
+        if self.blocked[r][c] == make_blocked {
+            return;
+        }
         if self.blocked[r][c] {
             self.lattice[r][c][4] = 1.0;
             set_vel(&mut self.lattice[r][c], Vector2::zero());
         }
         self.blocked[r][c] ^= true;
-    }
-    pub fn blocked(&self, (r, c): (usize, usize)) -> bool {
-        self.blocked[r][c]
     }
     pub fn total_mass(&self) -> f32 {
         let mut mass = 0.0;
@@ -88,8 +91,8 @@ impl Lattice {
     pub fn time_elapsed(&self) -> f32 {
         self.time_elapsed as f32 * TIME_STEP_SI
     }
-    pub fn new() -> Lattice {
-        let mut lattice = Lattice::new_lattice();
+    pub fn new() -> Self {
+        let mut lattice = Self::new_lattice();
         let equiv = {
             let mut equiv = [0.0; 9];
             equiv
@@ -102,37 +105,37 @@ impl Lattice {
         let blocked = vec![false; CELLS];
         let blocked: Box<[bool; CELLS]> = blocked.into_boxed_slice().try_into().unwrap();
         unsafe {
-            Lattice {
+            Self {
                 lattice,
                 blocked: std::mem::transmute(blocked),
                 time_elapsed: 0,
             }
         }
     }
-    fn new_lattice() -> Box<[[[f32; 9]; COLS]; ROWS]> {
+    fn new_lattice() -> Box<[[[f32; 9]; PHYS_COLS]; PHYS_ROWS]> {
         let lattice = vec![0.0; 9 * CELLS];
         let lattice: Box<[f32; 9 * CELLS]> = lattice.into_boxed_slice().try_into().unwrap();
         unsafe { std::mem::transmute(lattice) }
     }
-    pub fn collide(&mut self) {
+    pub fn lbm_collide(&mut self) {
         cells_iter_mut(&mut self.lattice).for_each(|cell| collide_cell(cell));
     }
-    pub fn stream(&mut self) {
-        let mut new_lattice = Lattice::new_lattice();
-        for (r0, c0) in cells().filter(|&cell| !self.blocked(cell)) {
+    pub fn lbm_stream(&mut self) {
+        let mut new_lattice = Self::new_lattice();
+        for (r0, c0) in cells().filter(|&cell| !self.is_blocked_at(cell)) {
             for &(dr0, dc0) in directions() {
                 let (r, c, dr, dc) = self.go((r0, c0), (dr0, dc0));
-                assert!(r < ROWS);
-                assert!(c < COLS);
-                assert!(!self.blocked((r, c)));
+                assert!(r < PHYS_ROWS);
+                assert!(c < PHYS_COLS);
+                assert!(!self.is_blocked_at((r, c)));
                 let old_vel = (3 * dr0 + dc0 + 4) as usize;
                 let new_vel = (3 * dr + dc + 4) as usize;
                 new_lattice[r][c][new_vel] += self.lattice[r0][c0][old_vel];
             }
         }
-        for r in 0..ROWS {
+        for r in 0..PHYS_ROWS {
             set_vel(&mut new_lattice[r][0], DEFAULT_VELOCITY);
-            set_vel(&mut new_lattice[r][COLS - 1], DEFAULT_VELOCITY);
+            set_vel(&mut new_lattice[r][PHYS_COLS - 1], DEFAULT_VELOCITY);
         }
         self.lattice = new_lattice;
         self.time_elapsed += 1;
@@ -143,8 +146,8 @@ impl Lattice {
             let nr = r as isize + dr;
             if nr == -1 {
                 (0, 1)
-            } else if nr == ROWS as isize {
-                (ROWS - 1, -1)
+            } else if nr == PHYS_ROWS as isize {
+                (PHYS_ROWS - 1, -1)
             } else {
                 (nr as usize, dr)
             }
@@ -153,17 +156,17 @@ impl Lattice {
         let nc = {
             let nc = c as isize + dc;
             if nc == -1 {
-                COLS - 1
-            } else if nc == COLS as isize {
+                PHYS_COLS - 1
+            } else if nc == PHYS_COLS as isize {
                 0
             } else {
                 nc as usize
             }
         };
         // Bounce against blocked cells
-        let blocked_both = self.blocked((nr, nc));
-        let blocked_r = self.blocked((nr, c));
-        let blocked_c = self.blocked((r, nc));
+        let blocked_both = self.is_blocked_at((nr, nc));
+        let blocked_r = self.is_blocked_at((nr, c));
+        let blocked_c = self.is_blocked_at((r, nc));
         if (blocked_r && blocked_c) || (blocked_both && !blocked_r && !blocked_c) {
             (r, c, -dr, -dc)
         } else if !blocked_both {
@@ -172,6 +175,36 @@ impl Lattice {
             (nr, c, dr, -dc)
         } else {
             (r, nc, -dr, dc)
+        }
+    }
+    pub fn get_velocity_vorticity_speed(
+        &self,
+        velocity: &mut [[Vector2<f32>; PHYS_COLS]; PHYS_ROWS],
+        vorticity: &mut [[f32; PHYS_COLS]; PHYS_ROWS],
+        speed: &mut [[f32; PHYS_COLS]; PHYS_ROWS],
+    ) -> () {
+        for (r, c) in cells() {
+            let vel = &mut velocity[r][c];
+            *vel = self.momentum_at((r, c)) / self.mass_at((r, c));
+            if !vel.is_finite() {
+                *vel = Vector2::zero();
+            }
+            speed[r][c] = vel.magnitude();
+        }
+        for (r, c) in cells() {
+            if self.is_blocked_at((r, c)) {
+                continue;
+            }
+            let mut res = 0.0;
+            if r != 0 && r != PHYS_ROWS - 1 {
+                res -= velocity[r - 1][c].y;
+                res += velocity[r + 1][c].y;
+            }
+            if c != 0 && c != PHYS_COLS - 1 {
+                res += velocity[r][c - 1].x;
+                res -= velocity[r][c + 1].x;
+            }
+            vorticity[r][c] = if res.is_finite() { res } else { 0.0 };
         }
     }
 }
@@ -183,7 +216,9 @@ fn set_vel(cell: &mut [f32; 9], vel: Vector2<f32>) {
         .for_each(|(cell, eq)| *cell = mass * eq);
 }
 
-fn cells_iter_mut(lattice: &mut [[[f32; 9]; COLS]; ROWS]) -> impl Iterator<Item = &mut [f32; 9]> {
+fn cells_iter_mut(
+    lattice: &mut [[[f32; 9]; PHYS_COLS]; PHYS_ROWS],
+) -> impl Iterator<Item = &mut [f32; 9]> {
     lattice
         .iter_mut()
         .map(|lattice_row| lattice_row.iter_mut())
@@ -198,7 +233,9 @@ fn directions() -> &'static [(isize, isize)] {
 }
 
 pub fn cells() -> impl Iterator<Item = (usize, usize)> {
-    (0..ROWS).map(|r| (0..COLS).map(move |c| (r, c))).flatten()
+    (0..PHYS_ROWS)
+        .map(|r| (0..PHYS_COLS).map(move |c| (r, c)))
+        .flatten()
 }
 
 fn equilibrium(vel: Vector2<f32>) -> impl Iterator<Item = f32> {
