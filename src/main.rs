@@ -1,23 +1,25 @@
+mod framebuffer;
 mod physics;
 mod visual;
 
+use crate::{
+    framebuffer::FrameBuffer,
+    physics::{Physics, PHYS_COLS, PHYS_ROWS},
+    visual::TestParticle,
+};
 use cgmath::{Vector2, Zero};
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
-use physics::{Physics, PHYS_COLS, PHYS_ROWS};
-use rayon::prelude::*;
 use std::{
-    mem,
     ops::{AddAssign, Div, Mul},
     time::{Duration, Instant},
 };
-use visual::{two_color, TestParticle};
 
-const WIN_COLS: usize = 8 * PHYS_COLS;
-const WIN_ROWS: usize = 8 * PHYS_ROWS;
+const PIXELS_PER_CELL: usize = 8;
 const SUBSTEPS: usize = 10;
 const MIN_DURATION_BETWEEN_LOGS: Duration = Duration::from_secs(1);
+const FPS_LIMIT: usize = 60;
 
-struct Sim {
+pub struct Sim {
     test_particles: Vec<TestParticle>,
     physics: Physics,
     ui: UiState,
@@ -114,18 +116,17 @@ impl Sim {
 }
 
 fn main() {
-    let mut framebuffer: Box<[[u32; WIN_COLS]; WIN_ROWS]> = Box::new([[0; WIN_COLS]; WIN_ROWS]);
+    let mut framebuffer = FrameBuffer::new();
     let mut window = Window::new(
         "A basic Lattice Boltzmann simulation",
-        WIN_COLS,
-        WIN_ROWS,
+        FrameBuffer::WIDTH,
+        FrameBuffer::HEIGHT,
         WindowOptions::default(),
     )
     .unwrap();
-    // Limit to max ~60 fps update rate
-    window.limit_update_rate(Some(
-        std::time::Duration::from_micros(16600) / SUBSTEPS as u32,
-    ));
+    window.limit_update_rate(Some(std::time::Duration::from_nanos(
+        1_000_000_000 / FPS_LIMIT as u64 / SUBSTEPS as u64,
+    )));
 
     let mut sim = Sim::new();
     println!("Initial mass: {:.2} gram", sim.physics.total_mass() * 1e3);
@@ -155,26 +156,20 @@ fn main() {
             &mut sim.measured.speed,
         );
 
-        {
-            framebuffer
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(r, fb_row)| {
-                    for (c, cell) in fb_row.iter_mut().enumerate() {
-                        if r >= WIN_ROWS || c >= WIN_COLS {
-                            dbg!(r, c, WIN_ROWS, WIN_COLS);
-                        }
-                        assert!(r < WIN_ROWS);
-                        assert!(c < WIN_COLS);
-                        *cell = color_at_window_pos((r, c), &sim);
-                    }
-                });
-        }
+        framebuffer.update(
+            sim.physics.blocked(),
+            if sim.ui.show_vorticity {
+                &sim.measured.vorticity
+            } else {
+                &sim.measured.speed
+            },
+            sim.ui.visualization_sensitivity as f32,
+        );
         {
             let vel = &sim.measured.velocity;
             sim.test_particles.iter_mut().for_each(|t| t.advance(vel));
             for test_particle in &sim.test_particles {
-                test_particle.paint_on(framebuffer.as_mut(), sim.ui.show_vorticity);
+                test_particle.paint_on(&mut framebuffer, sim.ui.show_vorticity);
             }
             for test_particle in &mut sim.test_particles {
                 if test_particle.is_outside_bounds() {
@@ -185,36 +180,12 @@ fn main() {
 
         window
             .update_with_buffer(
-                // SAFETY: Nested arrays are stored flat
-                unsafe {
-                    mem::transmute::<
-                        &mut [[u32; WIN_COLS]; WIN_ROWS],
-                        &mut [u32; WIN_COLS * WIN_ROWS],
-                    >(framebuffer.as_mut())
-                },
-                WIN_COLS,
-                WIN_ROWS,
+                framebuffer.as_flat(),
+                FrameBuffer::WIDTH,
+                FrameBuffer::HEIGHT,
             )
             .unwrap();
     }
-}
-
-fn color_at_window_pos(win_pos: (usize, usize), sim: &Sim) -> u32 {
-    let float_pos = FloatingCoords::from_window(win_pos);
-    let cell = float_pos.to_physics_cell();
-    if sim.physics.is_blocked_at(cell) {
-        return 0x00FF00;
-    }
-    let value = float_pos.sample_field_interpolated(if sim.ui.show_vorticity {
-        &sim.measured.vorticity
-    } else {
-        &sim.measured.speed
-    });
-    let res = value.signum()
-        * value
-            .abs()
-            .powf(1.0 / sim.ui.visualization_sensitivity as f32);
-    two_color(res)
 }
 
 #[derive(Clone, Copy)]
@@ -225,13 +196,13 @@ pub struct FloatingCoords {
 impl FloatingCoords {
     fn from_window((r, c): (usize, usize)) -> Self {
         Self {
-            r: r as f32 / (WIN_ROWS - 1) as f32,
-            c: c as f32 / (WIN_COLS - 1) as f32,
+            r: r as f32 / (FrameBuffer::HEIGHT - 1) as f32,
+            c: c as f32 / (FrameBuffer::WIDTH - 1) as f32,
         }
     }
     fn to_window(self) -> (usize, usize) {
-        let r = (self.r * (WIN_ROWS - 1) as f32) as usize;
-        let c = (self.c * (WIN_COLS - 1) as f32) as usize;
+        let r = (self.r * (FrameBuffer::HEIGHT - 1) as f32) as usize;
+        let c = (self.c * (FrameBuffer::WIDTH - 1) as f32) as usize;
         (r, c)
     }
     fn to_physics_cell(self) -> (usize, usize) {

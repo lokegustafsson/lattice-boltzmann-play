@@ -54,8 +54,8 @@ pub struct Physics {
 }
 
 impl Physics {
-    pub fn is_blocked_at(&self, (r, c): (usize, usize)) -> bool {
-        self.blocked[r][c]
+    pub fn blocked(&self) -> &[[bool; PHYS_COLS]; PHYS_ROWS] {
+        &self.blocked
     }
     pub fn update_cell_blocked_status(&mut self, (r, c): (usize, usize), make_blocked: bool) {
         if self.blocked[r][c] == make_blocked {
@@ -118,16 +118,26 @@ impl Physics {
         unsafe { std::mem::transmute(lattice) }
     }
     pub fn lbm_collide(&mut self) {
-        cells_iter_mut(&mut self.lattice).for_each(|cell| collide_cell(cell));
+        cells_iter_mut(&mut self.lattice).for_each(collide_cell);
     }
     pub fn lbm_stream(&mut self) {
         let mut new_lattice = Self::new_lattice();
-        for (r0, c0) in cells().filter(|&cell| !self.is_blocked_at(cell)) {
-            for &(dr0, dc0) in directions() {
+        for (r0, c0) in cells().filter(|&(r, c)| !self.blocked[r][c]) {
+            for (dr0, dc0) in [
+                (-1, -1),
+                (-1, 0),
+                (-1, 1),
+                (0, -1),
+                (0, 0),
+                (0, 1),
+                (1, -1),
+                (1, 0),
+                (1, 1),
+            ] {
                 let (r, c, dr, dc) = self.go((r0, c0), (dr0, dc0));
-                assert!(r < PHYS_ROWS);
-                assert!(c < PHYS_COLS);
-                assert!(!self.is_blocked_at((r, c)));
+                debug_assert!(r < PHYS_ROWS);
+                debug_assert!(c < PHYS_COLS);
+                debug_assert!(!self.blocked[r][c]);
                 let old_vel = (3 * dr0 + dc0 + 4) as usize;
                 let new_vel = (3 * dr + dc + 4) as usize;
                 new_lattice[r][c][new_vel] += self.lattice[r0][c0][old_vel];
@@ -164,9 +174,9 @@ impl Physics {
             }
         };
         // Bounce against blocked cells
-        let blocked_both = self.is_blocked_at((nr, nc));
-        let blocked_r = self.is_blocked_at((nr, c));
-        let blocked_c = self.is_blocked_at((r, nc));
+        let blocked_both = self.blocked[nr][nc];
+        let blocked_r = self.blocked[nr][c];
+        let blocked_c = self.blocked[r][nc];
         if (blocked_r && blocked_c) || (blocked_both && !blocked_r && !blocked_c) {
             (r, c, -dr, -dc)
         } else if !blocked_both {
@@ -182,7 +192,7 @@ impl Physics {
         velocity: &mut [[Vector2<f32>; PHYS_COLS]; PHYS_ROWS],
         vorticity: &mut [[f32; PHYS_COLS]; PHYS_ROWS],
         speed: &mut [[f32; PHYS_COLS]; PHYS_ROWS],
-    ) -> () {
+    ) {
         for (r, c) in cells() {
             let vel = &mut velocity[r][c];
             *vel = self.momentum_at((r, c)) / self.mass_at((r, c));
@@ -192,7 +202,7 @@ impl Physics {
             speed[r][c] = vel.magnitude();
         }
         for (r, c) in cells() {
-            if self.is_blocked_at((r, c)) {
+            if self.blocked[r][c] {
                 continue;
             }
             let mut res = 0.0;
@@ -221,21 +231,11 @@ fn cells_iter_mut(
 ) -> impl Iterator<Item = &mut [f32; 9]> {
     lattice
         .iter_mut()
-        .map(|lattice_row| lattice_row.iter_mut())
-        .flatten()
-}
-
-#[rustfmt::skip]
-fn directions() -> &'static [(isize, isize)] {
-    &[(-1, -1), (-1, 0), (-1, 1),
-      ( 0, -1), ( 0, 0), ( 0, 1),
-      ( 1, -1), ( 1, 0), ( 1, 1)]
+        .flat_map(|lattice_row| lattice_row.iter_mut())
 }
 
 pub fn cells() -> impl Iterator<Item = (usize, usize)> {
-    (0..PHYS_ROWS)
-        .map(|r| (0..PHYS_COLS).map(move |c| (r, c)))
-        .flatten()
+    (0..PHYS_ROWS).flat_map(|r| (0..PHYS_COLS).map(move |c| (r, c)))
 }
 
 fn equilibrium(vel: Vector2<f32>) -> impl Iterator<Item = f32> {
@@ -259,17 +259,17 @@ fn equilibrium(vel: Vector2<f32>) -> impl Iterator<Item = f32> {
 
 fn collide_cell(cell: &mut [f32; 9]) {
     let mass: f32 = cell.iter().sum();
-    assert!(mass.is_finite());
+    debug_assert!(mass.is_finite());
     if mass.is_zero() {
         return;
     }
-    assert!(mass.is_sign_positive());
+    debug_assert!(mass.is_sign_positive());
 
     let momentum: Vector2<f32> = cell.iter().enumerate().map(|(i, &p)| C_VELS[i] * p).sum();
-    assert!(momentum.is_finite());
+    debug_assert!(momentum.is_finite());
 
     let vel = momentum / mass;
-    assert!(vel.is_finite());
+    debug_assert!(vel.is_finite());
 
     cell.iter_mut()
         .zip(equilibrium(vel).map(|eq| mass * eq))
