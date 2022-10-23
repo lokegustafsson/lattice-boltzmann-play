@@ -45,7 +45,7 @@ impl TestParticle {
         velocity: &[[Vector2<f32>; CONFIG.physics.grid_cols]; CONFIG.physics.grid_rows],
     ) {
         let vel = self.pos.sample_field_interpolated(velocity);
-        self.pos.r += CONFIG.test_particle_speed * vel.x / CONFIG.physics.grid_rows as f32;
-        self.pos.c += CONFIG.test_particle_speed * vel.y / CONFIG.physics.grid_cols as f32;
+        self.pos.r += CONFIG.substeps as f32 * vel.x / CONFIG.physics.grid_rows as f32;
+        self.pos.c += CONFIG.substeps as f32 * vel.y / CONFIG.physics.grid_cols as f32;
     }
 }

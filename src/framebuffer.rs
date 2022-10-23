@@ -1,5 +1,6 @@
 use crate::config::CONFIG as C;
-use rayon::prelude::*;
+use rayon::prelude::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+use std::mem;
 
 const GRID_COLS: usize = C.physics.grid_cols;
 const GRID_ROWS: usize = C.physics.grid_rows;
@@ -19,6 +20,11 @@ impl FrameBuffer {
         }
     }
     pub fn as_flat(&self) -> &[u32; Self::SIZE] {
+        assert_eq!(
+            mem::size_of_val(&*self.inner),
+            mem::size_of::<[u32; Self::SIZE]>()
+        );
+        // SAFETY: Flattening arrays of same inner element type and size.
         unsafe { &*(self.inner.as_ref() as *const NestedArray as *const [u32; Self::SIZE]) }
     }
     pub fn set_pixel(&mut self, r: usize, c: usize, color: u32) {

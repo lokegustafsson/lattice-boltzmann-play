@@ -1,10 +1,12 @@
 mod config;
 mod framebuffer;
 mod physics;
-mod visual;
+mod test_particle;
 
-use crate::{config::CONFIG, framebuffer::FrameBuffer, physics::Physics, visual::TestParticle};
-use cgmath::{Vector2, Zero};
+use crate::{
+    config::CONFIG, framebuffer::FrameBuffer, physics::Physics, test_particle::TestParticle,
+};
+use cgmath::{InnerSpace, Vector2, Zero};
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use std::{
     ops::{AddAssign, Div, Mul},
@@ -20,15 +22,14 @@ pub struct Sim {
 struct UiState {
     tick_index: usize,
     last_logged_instant: Instant,
-    paint_cells_with_filled: bool,
-    last_tick_had_mouse_down: bool,
     show_vorticity: bool,
     visualization_sensitivity: i8,
     exponential_moving_average_frame_time: f64,
     exponential_moving_average_physics_time: f64,
 }
 struct InputSnapshot {
-    mouse_is_down: bool,
+    left_mouse_is_down: bool,
+    right_mouse_is_down: bool,
     mouse_pos: (usize, usize),
     pressed_space: bool,
     pressed_up: bool,
@@ -51,10 +52,8 @@ impl Sim {
             ui: UiState {
                 tick_index: 0,
                 last_logged_instant: Instant::now(),
-                paint_cells_with_filled: true,
-                last_tick_had_mouse_down: false,
                 show_vorticity: false,
-                visualization_sensitivity: 1,
+                visualization_sensitivity: 8,
                 exponential_moving_average_frame_time: 1.0,
                 exponential_moving_average_physics_time: 1.0,
             },
@@ -68,21 +67,29 @@ impl Sim {
     fn handle_input(
         &mut self,
         InputSnapshot {
-            mouse_is_down,
+            left_mouse_is_down,
+            right_mouse_is_down,
             mouse_pos: (wx, wy),
             pressed_space,
             pressed_up,
             pressed_down,
         }: InputSnapshot,
     ) {
-        if mouse_is_down {
-            self.physics.update_cell_blocked_status(
-                FloatingCoords::from_window((wy, wx)).to_physics_cell(),
-                self.ui.paint_cells_with_filled,
-            );
-        }
-        if self.ui.last_tick_had_mouse_down && !mouse_is_down {
-            self.ui.paint_cells_with_filled ^= true;
+        if left_mouse_is_down ^ right_mouse_is_down {
+            let (r0, c0) = FloatingCoords::from_window((wy, wx)).to_physics_cell();
+            let make_blocked = left_mouse_is_down;
+            for (r, c) in [
+                (r0, c0),
+                (r0 - 1, c0),
+                (r0 + 1, c0),
+                (r0, c0 - 1),
+                (r0, c0 + 1),
+            ] {
+                if r < GRID_ROWS && c < GRID_COLS {
+                    self.physics
+                        .update_cell_blocked_status((r, c), make_blocked);
+                }
+            }
         }
         self.ui.show_vorticity ^= pressed_space;
         self.ui.visualization_sensitivity += pressed_up as i8;
@@ -94,12 +101,12 @@ impl Sim {
         if now.duration_since(self.ui.last_logged_instant) > CONFIG.min_duration_between_logs {
             println!(
                 concat!(
-                    "Mass: {:.2}g, Elapsed: {:.2}ms, {:.1} FPS",
+                    "Mass\tTick\tFPS\tFrame time\tPhysics time\tMLUPS",
                     "\n",
-                    "Frame time: {:.2}ms, Physics time: {:.2}ms, MLUPS: {:.2}"
+                    "{:.2e}\t{}\t{:.0}\t{:.1}ms\t\t{:.1}ms\t\t{:.0}",
                 ),
-                self.physics.total_mass() * 1e3,
-                self.physics.time_elapsed() * 1e3,
+                self.physics.total_cell_mass(),
+                self.physics.ticks_elapsed(),
                 1.0 / self.ui.exponential_moving_average_frame_time,
                 1e3 * self.ui.exponential_moving_average_frame_time,
                 1e3 * self.ui.exponential_moving_average_physics_time,
@@ -127,13 +134,23 @@ fn main() {
     let mut sim = Sim::new();
     let mut instant_last_frame = Instant::now();
     const C: f64 = 0.90;
-    println!("Initial mass: {:.2} gram", sim.physics.total_mass() * 1e3);
+    println!(
+        concat!(
+            "Base velocity: Mach {}",
+            "\n",
+            "Base reynolds number: {}",
+            "\n"
+        ),
+        CONFIG.physics.mach_number_default_velocity.magnitude(),
+        CONFIG.physics.reynolds_number_undisturbed_flow,
+    );
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        let mut instant_pre_physics = Instant::now();
+        let instant_pre_physics = Instant::now();
         for i in 0..CONFIG.substeps {
             sim.handle_input(InputSnapshot {
-                mouse_is_down: window.get_mouse_down(minifb::MouseButton::Left),
+                left_mouse_is_down: window.get_mouse_down(minifb::MouseButton::Left),
+                right_mouse_is_down: window.get_mouse_down(minifb::MouseButton::Right),
                 mouse_pos: {
                     let (fx, fy) = window.get_mouse_pos(minifb::MouseMode::Clamp).unwrap();
                     (fx as usize, fy as usize)
