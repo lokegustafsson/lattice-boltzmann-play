@@ -1,22 +1,21 @@
-use crate::{
-    physics::{PHYS_COLS, PHYS_ROWS},
-    PIXELS_PER_CELL,
-};
+use crate::config::CONFIG as C;
 use rayon::prelude::*;
 
-type NestedArray = [[[[u32; PIXELS_PER_CELL]; PHYS_COLS]; PIXELS_PER_CELL]; PHYS_ROWS];
+const GRID_COLS: usize = C.physics.grid_cols;
+const GRID_ROWS: usize = C.physics.grid_rows;
+type NestedArray = [[[[u32; C.subcells]; GRID_COLS]; C.subcells]; GRID_ROWS];
 pub struct FrameBuffer {
     inner: Box<NestedArray>,
 }
 impl FrameBuffer {
-    pub const WIDTH: usize = PIXELS_PER_CELL * PHYS_COLS;
-    pub const HEIGHT: usize = PIXELS_PER_CELL * PHYS_ROWS;
+    pub const WIDTH: usize = C.subcells * GRID_COLS;
+    pub const HEIGHT: usize = C.subcells * GRID_ROWS;
 
-    const SIZE: usize = PIXELS_PER_CELL * PHYS_COLS * PIXELS_PER_CELL * PHYS_ROWS;
+    const SIZE: usize = C.subcells * GRID_COLS * C.subcells * GRID_ROWS;
 
     pub fn new() -> Self {
         Self {
-            inner: Box::new([[[[0; PIXELS_PER_CELL]; PHYS_COLS]; PIXELS_PER_CELL]; PHYS_ROWS]),
+            inner: Box::new([[[[0; C.subcells]; GRID_COLS]; C.subcells]; GRID_ROWS]),
         }
     }
     pub fn as_flat(&self) -> &[u32; Self::SIZE] {
@@ -26,22 +25,21 @@ impl FrameBuffer {
         if r > Self::HEIGHT || c > Self::WIDTH {
             dbg!(r, c, Self::HEIGHT, Self::WIDTH);
         }
-        self.inner[r / PIXELS_PER_CELL][r % PIXELS_PER_CELL][c / PIXELS_PER_CELL]
-            [c % PIXELS_PER_CELL] = color
+        self.inner[r / C.subcells][r % C.subcells][c / C.subcells][c % C.subcells] = color
     }
     pub fn update(
         &mut self,
-        blocked: &[[bool; PHYS_COLS]; PHYS_ROWS],
-        field: &[[f32; PHYS_COLS]; PHYS_ROWS],
+        blocked: &[[bool; GRID_COLS]; GRID_ROWS],
+        field: &[[f32; GRID_COLS]; GRID_ROWS],
         visualization_sensitivity: f32,
     ) {
         self.inner
             .par_iter_mut()
             .enumerate()
             .for_each(|(r, block_row)| {
-                for cell_r in 0..PIXELS_PER_CELL {
-                    for c in 0..PHYS_COLS {
-                        for cell_c in 0..PIXELS_PER_CELL {
+                for (cell_r, row) in block_row.iter_mut().enumerate() {
+                    for (c, block_col) in row.iter_mut().enumerate() {
+                        for (cell_c, cell) in block_col.iter_mut().enumerate() {
                             let color = if blocked[r][c] {
                                 0x00FF00
                             } else {
@@ -51,7 +49,7 @@ impl FrameBuffer {
                                 let intensity = (val.abs() as u32).min(255);
                                 0xFFFFFF - (if val < 0.0 { 0x000101 } else { 0x010100 }) * intensity
                             };
-                            block_row[cell_r][c][cell_c] = color;
+                            *cell = color;
                         }
                     }
                 }
@@ -60,15 +58,15 @@ impl FrameBuffer {
 }
 
 fn sample_field(
-    field: &[[f32; PHYS_COLS]; PHYS_ROWS],
+    field: &[[f32; GRID_COLS]; GRID_ROWS],
     r: usize,
     c: usize,
     cell_r: usize,
     cell_c: usize,
 ) -> f32 {
-    const HALFCELL: usize = PIXELS_PER_CELL / 2;
-    const TC: f32 = PIXELS_PER_CELL as f32;
-    if r == 0 || r + 1 == PHYS_ROWS || c == 0 || c + 1 == PHYS_COLS {
+    const HALFCELL: usize = C.subcells / 2;
+    const TC: f32 = C.subcells as f32;
+    if r == 0 || r + 1 == GRID_ROWS || c == 0 || c + 1 == GRID_COLS {
         field[r][c]
     } else {
         match (cell_r >= HALFCELL, cell_c >= HALFCELL) {

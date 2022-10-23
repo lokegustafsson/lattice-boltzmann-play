@@ -1,23 +1,15 @@
+mod config;
 mod framebuffer;
 mod physics;
 mod visual;
 
-use crate::{
-    framebuffer::FrameBuffer,
-    physics::{Physics, PHYS_COLS, PHYS_ROWS},
-    visual::TestParticle,
-};
+use crate::{config::CONFIG, framebuffer::FrameBuffer, physics::Physics, visual::TestParticle};
 use cgmath::{Vector2, Zero};
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use std::{
     ops::{AddAssign, Div, Mul},
-    time::{Duration, Instant},
+    time::Instant,
 };
-
-const PIXELS_PER_CELL: usize = 8;
-const SUBSTEPS: usize = 10;
-const MIN_DURATION_BETWEEN_LOGS: Duration = Duration::from_secs(1);
-const FPS_LIMIT: usize = 60;
 
 pub struct Sim {
     test_particles: Vec<TestParticle>,
@@ -27,12 +19,13 @@ pub struct Sim {
 }
 struct UiState {
     tick_index: usize,
-    last_tick_instant: Instant,
     last_logged_instant: Instant,
     paint_cells_with_filled: bool,
     last_tick_had_mouse_down: bool,
     show_vorticity: bool,
     visualization_sensitivity: i8,
+    exponential_moving_average_frame_time: f64,
+    exponential_moving_average_physics_time: f64,
 }
 struct InputSnapshot {
     mouse_is_down: bool,
@@ -41,10 +34,12 @@ struct InputSnapshot {
     pressed_up: bool,
     pressed_down: bool,
 }
+const GRID_COLS: usize = CONFIG.physics.grid_cols;
+const GRID_ROWS: usize = CONFIG.physics.grid_rows;
 struct Measured {
-    velocity: Box<[[Vector2<f32>; PHYS_COLS]; PHYS_ROWS]>,
-    vorticity: Box<[[f32; PHYS_COLS]; PHYS_ROWS]>,
-    speed: Box<[[f32; PHYS_COLS]; PHYS_ROWS]>,
+    velocity: Box<[[Vector2<f32>; GRID_COLS]; GRID_ROWS]>,
+    vorticity: Box<[[f32; GRID_COLS]; GRID_ROWS]>,
+    speed: Box<[[f32; GRID_COLS]; GRID_ROWS]>,
 }
 impl Sim {
     fn new() -> Self {
@@ -55,17 +50,18 @@ impl Sim {
             physics: Physics::new(),
             ui: UiState {
                 tick_index: 0,
-                last_tick_instant: Instant::now(),
                 last_logged_instant: Instant::now(),
                 paint_cells_with_filled: true,
                 last_tick_had_mouse_down: false,
                 show_vorticity: false,
                 visualization_sensitivity: 1,
+                exponential_moving_average_frame_time: 1.0,
+                exponential_moving_average_physics_time: 1.0,
             },
             measured: Measured {
-                velocity: Box::new([[Vector2::zero(); PHYS_COLS]; PHYS_ROWS]),
-                vorticity: Box::new([[0.0; PHYS_COLS]; PHYS_ROWS]),
-                speed: Box::new([[0.0; PHYS_COLS]; PHYS_ROWS]),
+                velocity: Box::new([[Vector2::zero(); GRID_COLS]; GRID_ROWS]),
+                vorticity: Box::new([[0.0; GRID_COLS]; GRID_ROWS]),
+                speed: Box::new([[0.0; GRID_COLS]; GRID_ROWS]),
             },
         }
     }
@@ -95,23 +91,23 @@ impl Sim {
     fn maybe_print_log(&mut self) {
         self.ui.tick_index += 1;
         let now = Instant::now();
-        if now.duration_since(self.ui.last_logged_instant) > MIN_DURATION_BETWEEN_LOGS {
+        if now.duration_since(self.ui.last_logged_instant) > CONFIG.min_duration_between_logs {
             println!(
-                "Mass: {:.2} gram, Elapsed: {:.2} milliseconds, {:.1} FPS, MLUPS: {:.2}",
+                concat!(
+                    "Mass: {:.2}g, Elapsed: {:.2}ms, {:.1} FPS",
+                    "\n",
+                    "Frame time: {:.2}ms, Physics time: {:.2}ms, MLUPS: {:.2}"
+                ),
                 self.physics.total_mass() * 1e3,
                 self.physics.time_elapsed() * 1e3,
-                1.0 / Instant::now()
-                    .duration_since(self.ui.last_tick_instant)
-                    .as_secs_f32(),
-                (PHYS_ROWS * PHYS_COLS * SUBSTEPS) as f32
-                    / (1e6
-                        * Instant::now()
-                            .duration_since(self.ui.last_tick_instant)
-                            .as_secs_f32()),
+                1.0 / self.ui.exponential_moving_average_frame_time,
+                1e3 * self.ui.exponential_moving_average_frame_time,
+                1e3 * self.ui.exponential_moving_average_physics_time,
+                (GRID_ROWS * GRID_COLS * CONFIG.substeps) as f64
+                    / (1e6 * self.ui.exponential_moving_average_physics_time)
             );
             self.ui.last_logged_instant = now;
         }
-        self.ui.last_tick_instant = now;
     }
 }
 
@@ -125,14 +121,17 @@ fn main() {
     )
     .unwrap();
     window.limit_update_rate(Some(std::time::Duration::from_nanos(
-        1_000_000_000 / FPS_LIMIT as u64 / SUBSTEPS as u64,
+        1_000_000_000 / CONFIG.fps_limit as u64 / CONFIG.substeps as u64,
     )));
 
     let mut sim = Sim::new();
+    let mut instant_last_frame = Instant::now();
+    const C: f64 = 0.90;
     println!("Initial mass: {:.2} gram", sim.physics.total_mass() * 1e3);
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        for i in 0..SUBSTEPS {
+        let mut instant_pre_physics = Instant::now();
+        for i in 0..CONFIG.substeps {
             sim.handle_input(InputSnapshot {
                 mouse_is_down: window.get_mouse_down(minifb::MouseButton::Left),
                 mouse_pos: {
@@ -143,11 +142,18 @@ fn main() {
                 pressed_up: window.is_key_pressed(Key::Up, KeyRepeat::No),
                 pressed_down: window.is_key_pressed(Key::Down, KeyRepeat::No),
             });
-            if i != SUBSTEPS - 1 {
+            if i != CONFIG.substeps - 1 {
                 window.update();
             }
             sim.physics.lbm_collide();
             sim.physics.lbm_stream();
+        }
+        {
+            let physics_time = Instant::now()
+                .duration_since(instant_pre_physics)
+                .as_secs_f64();
+            sim.ui.exponential_moving_average_physics_time *= C;
+            sim.ui.exponential_moving_average_physics_time += (1.0 - C) * physics_time;
         }
         sim.maybe_print_log();
         sim.physics.get_velocity_vorticity_speed(
@@ -185,6 +191,13 @@ fn main() {
                 FrameBuffer::HEIGHT,
             )
             .unwrap();
+        {
+            let now = Instant::now();
+            let frame_time = now.duration_since(instant_last_frame).as_secs_f64();
+            instant_last_frame = now;
+            sim.ui.exponential_moving_average_frame_time *= C;
+            sim.ui.exponential_moving_average_frame_time += (1.0 - C) * frame_time;
+        }
     }
 }
 
@@ -206,18 +219,18 @@ impl FloatingCoords {
         (r, c)
     }
     fn to_physics_cell(self) -> (usize, usize) {
-        let ri = ((self.r * (PHYS_ROWS - 1) as f32) + 0.5) as usize;
-        let ci = ((self.c * (PHYS_COLS - 1) as f32) + 0.5) as usize;
+        let ri = ((self.r * (GRID_ROWS - 1) as f32) + 0.5) as usize;
+        let ci = ((self.c * (GRID_COLS - 1) as f32) + 0.5) as usize;
         (ri, ci)
     }
 
-    fn sample_field_interpolated<T>(self, field: &[[T; PHYS_COLS]; PHYS_ROWS]) -> T
+    fn sample_field_interpolated<T>(self, field: &[[T; GRID_COLS]; GRID_ROWS]) -> T
     where
         T: AddAssign<T> + Mul<f32, Output = T> + Div<f32, Output = T>,
         T: Zero + Copy,
     {
-        let r = self.r * (PHYS_ROWS - 1) as f32;
-        let c = self.c * (PHYS_COLS - 1) as f32;
+        let r = self.r * (GRID_ROWS - 1) as f32;
+        let c = self.c * (GRID_COLS - 1) as f32;
         let ri = (r + 0.5) as usize;
         let ci = (c + 0.5) as usize;
 
@@ -227,7 +240,7 @@ impl FloatingCoords {
             for dc in 0..3 {
                 let r_point = (ri + dr).wrapping_sub(1);
                 let c_point = (ci + dc).wrapping_sub(1);
-                if r_point < PHYS_ROWS && c_point < PHYS_COLS {
+                if r_point < GRID_ROWS && c_point < GRID_COLS {
                     let r_delta = r_point as f32 - r;
                     let c_delta = c_point as f32 - c;
                     let weight: f32 = (1.0 - r_delta * r_delta - c_delta * c_delta).max(0.0);

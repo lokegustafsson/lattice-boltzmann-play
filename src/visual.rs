@@ -1,8 +1,4 @@
-use crate::{
-    framebuffer::FrameBuffer,
-    physics::{PHYS_COLS, PHYS_ROWS},
-    FloatingCoords, Sim,
-};
+use crate::{config::CONFIG, framebuffer::FrameBuffer, FloatingCoords};
 use cgmath::Vector2;
 
 pub struct TestParticle {
@@ -44,10 +40,12 @@ impl TestParticle {
             }
         }
     }
-    pub fn advance(&mut self, velocity: &[[Vector2<f32>; PHYS_COLS]; PHYS_ROWS]) {
+    pub fn advance(
+        &mut self,
+        velocity: &[[Vector2<f32>; CONFIG.physics.grid_cols]; CONFIG.physics.grid_rows],
+    ) {
         let vel = self.pos.sample_field_interpolated(velocity);
-        const SPEED: f32 = 2.0;
-        self.pos.r += SPEED * vel.x / PHYS_ROWS as f32;
-        self.pos.c += SPEED * vel.y / PHYS_COLS as f32;
+        self.pos.r += CONFIG.test_particle_speed * vel.x / CONFIG.physics.grid_rows as f32;
+        self.pos.c += CONFIG.test_particle_speed * vel.y / CONFIG.physics.grid_cols as f32;
     }
 }
